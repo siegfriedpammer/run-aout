@@ -1,0 +1,657 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage[style=numeric,hyperref=auto,urldate=long,maxnames=99]{biblatex}
+\usepackage{makecell}
+\usepackage{biblatex}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{graphicx}
+\graphicspath{ {./img/} }
+
+\setlength{\oddsidemargin}{0in}
+\setlength{\evensidemargin}{0in}
+\setlength{\headsep}{0pt}
+\setlength{\topmargin}{-0.25in}
+\setlength{\textheight}{9in}
+\setlength{\textwidth}{6.4in}
+
+\renewcommand{\labelitemii}{$\textendash$}
+\newcommand{\todo}[1]{\textcolor{red}{TODO: #1}}
+
+\title{The evolution of Linux executable formats and emulating \texttt{a.out} executables in Linux user space}
+\author{Siegfried Oleg Pammer, 01633095, TU Wien}
+\date{\today}
+
+\newcommand{\monthword}[1]{\ifcase#1\or Jänner\or Februar\or März\or April\or
+                                        Mai\or Juni\or Juli\or August\or
+                                        September\or Oktober\or November\or Dezember\fi}
+
+\addbibresource{main.bib}
+
+\lstset{
+  basicstyle=\ttfamily,
+  keepspaces,
+  columns=fullflexible,
+  numbers=left,
+  breaklines,
+}
+
+\begin{document}
+
+\maketitle
+
+\section*{Erklärung zur Verfassung der Arbeit}
+Hiermit erkläre ich, dass ich diese Arbeit selbständig verfasst habe, dass ich die verwendeten Quellen und Hilfsmittel vollständig angegeben habe und dass ich die Stellen der Arbeit – einschließlich Tabellen, Karten und Abbildungen –, die anderen Werken oder dem Internet im Wortlaut oder dem Sinn nach entnommen sind, auf jeden Fall unter Angabe der Quelle als Entlehnung kenntlich gemacht habe.
+
+\vspace{1cm}
+\noindent
+\begin{flushleft}
+\the\day. \monthword{\the\month} \the\year
+\end{flushleft}
+\begin{flushright}\rule{5cm}{0.4pt}\\Siegfried Oleg Pammer\end{flushright}
+
+
+\section*{Acknowledgements}
+\todo{}
+
+\section*{Abstract}
+\label{abstract}
+\todo{}
+
+\newpage
+\section{Introduction}
+\label{intro}
+
+In March of 2019 Linus Torvalds published a change \cite{PhoronixNews} \cite{LinuxKernelGitMsg} to the Linux kernel, in which support for the \texttt{a.out} format was deprecated and subsequently removed (the change went into effect as of kernel version \texttt{5.0}). However, as there are still people interested in being able to run \texttt{a.out} binaries on current versions of Linux, this work aims to find a solution that does not require special kernel support.
+
+This work will discuss how operating systems generally load binaries using the example of \texttt{a.out} on Linux. Further it will explore the characteristics and uses of the variants of the \texttt{a.out} format, as well as the downsides, which led to \texttt{a.out} gradually being replaced by ELF around 1995 and finally deprecated and removed in 2019. Furthermore, this work will explore the options and work that would have to be done to allow Linux \texttt{a.out} binaries to run on current kernels and systems and finally present a possible implementation of such a loader.
+
+\section{The Environment}
+\label{environment}
+
+In the following section the prerequisites of this work will be laid out. First, a short summary of the history of \texttt{a.out} binaries will be given, followed by an explanation of the x86 architecture, system calls and the \texttt{ptrace} API.
+
+\subsection{A brief history of the \texttt{a.out} format}
+\label{history}
+
+It all started with the PDP-11 which was first introduced in 1970. Because it used 16-bit addressing, it limited the user to a total of only 64KB. In order to work around this limitation, later iterations used virtual memory (PDP-11/40, 1972\cite[page 6-2]{PDP1140Handbook}) and separate address spaces (PDP-11/45, 1973) for code (called ``I(nstruction) space") and data (called ``D(ata) space")\cite[page 145]{PDP1145Handbook}, enabling the use of 64KB of code and also 64KB of data per process. The various instructions operated on either the I or D space. Additionally programs could use Status Register \#3 to decide whether they want to use a ``combined" address space or separate I and D spaces.
+
+Another advantage \cite[page 50]{Levine} of this change was that the I space of a process could be marked read-only, making it possible to use a single copy of a program's code in multiple processes -- saving considerable amounts of memory. Executing one program in multiple processes was a common feature and use-case of time-sharing systems like UNIX. The tools in use  -- compilers, assemblers and linkers -- were modified to create two-section object files, leading to the birth of the \texttt{a.out} format\footnote{\texttt{a.out} stands for ``assembler output". Although the name ``a.out" is still used today as the default output name when compiling a program with GCC, these output files do not use the \texttt{a.out} format.\cite{RitchieCLangDev}}. The concept of multiple sections (sometimes called ``segments") was subsequently borrowed by many executable formats, including Executable and Linking Format (ELF)\cite{ElfManPage} used today on Linux, and Portable Executable (PE) used on Microsoft Windows.
+
+\subsection{x86 Architecture}
+\label{x86arch}
+
+The x86 architecture is a CISC (Complex Instruction Set Computer) architecture, as it offers a wide variety of instructions, which are 1 up to 15 bytes in length. Modern x86 processors support different modes of operation, including ``real mode" (16-bit), ``protected mode" (32-bit) and ``long mode" (64-bit). Long mode supports both 64-bit and 32-bit programs.
+
+In 32-bit mode there are nine general purpose registers:
+
+\begin{itemize}
+    \item \texttt{EAX}: Accumulator, usually contains procedure return values
+    \item \texttt{EBX}: Base index
+    \item \texttt{ECX}: Counter
+    \item \texttt{EDX}: Extend accumulator
+    \item \texttt{ESI}: Source index
+    \item \texttt{EDI}: Destination index
+    \item \texttt{ESP}: Stack pointer (top address)
+    \item \texttt{EBP}: Stack base pointer (holds current stack frame address)
+    \item \texttt{EIP}: Instruction pointer
+\end{itemize}
+
+All of these can be used freely (except \texttt{EIP}), which can only be modified by branch instructions. \texttt{ESP} and \texttt{EBP} are typically modified at the start/end of a procedure to allocate/free space for additional values.
+
+Additionally, there are six segment registers \texttt{CS} (code segment), \texttt{DS} (data segment), \texttt{SS} (stack segment), \texttt{ES} (extra segment), \texttt{FS} (extra segment 2), \texttt{GS} (extra segment 3), which were introduced in 16-bit real mode, to allow the use of more than 64KB of memory (similar to PDP-11's I space and D space, albeit more advanced). In the 32-bit and 64-bit architecture the segment registers are no longer used, but are kept for backward compatibility.
+
+The special \texttt{EFLAGS} register provides information on the state of execution, such as the \texttt{ZF} (zero flag) or \texttt{OF} (overflow flag) and many others.
+
+\subsection{System Calls}
+\label{system calls}
+
+System calls are used in many operating systems as a way for user-space code to call into the kernel. Many functions in the C standard library are wrappers around system calls, such as \texttt{open}, \texttt{read}, \texttt{write} or \texttt{close}.
+
+In Linux there are multiple ways of executing system calls\cite[Chapter 10]{UnderstandingKernel}: ``legacy" and ``fast" system calls. The fast system calls use dedicated instructions: \texttt{sysenter} and \texttt{sysexit} for 32-bit, \texttt{system call} and \texttt{sysret} for 64-bit. We will focus on ``legacy" system calls, because they were used in the binaries that were used as examples.
+
+Legacy system calls are performed using the \texttt{int 0x80} instruction. Each system call has a unique ID, which is stored in the \texttt{EAX} register. Up to six arguments can be directly stored in the \texttt{EBX}, \texttt{ECX}, \texttt{EDX}, \texttt{ESI}, \texttt{EDI} and \texttt{EBP} registers. Some system calls (e.g., \texttt{mmap}) require that the arguments must be passed on the stack, with the stack address passed in the \texttt{EBX} register. The result of the system call is stored in the \texttt{EAX} register before control is returned to user space.
+
+After the interrupt is received, the current register state is saved on the kernel's stack and then the kernel uses the system call number stored in \texttt{EAX} to jump to the appropriate handler. After the call is completed the original register state (with one exception: \texttt{EAX} contains the result of the system call) is restored and execution of the user code process continues.
+
+\subsection{The \texttt{ptrace} API}
+\label{ptrace api}
+
+\texttt{ptrace} is a very powerful system call, which can be used to control execution of a process and examine that process's memory and registers. Many Linux tools, including \texttt{gdb} and \texttt{strace}, rely on \texttt{ptrace} to provide their functionality.
+
+The general usage patterns are that the target process (the ``tracee") is either launched by the ``tracer" process or it the tracer process attaches itself to the tracee. The pattern used by this work falls into the first category.
+
+The \texttt{ptrace} API provides one function that can perform a variety of tasks, including initialization of a trace, setting options, reading and writing registers and memory, listening for signals and system calls, and single-stepping instruction by instruction.
+
+The function accepts four parameters: the request kind, the PID of the target process and two pointer values: address and data. The request kind describes, which action should be performed on the target process. The address and data values are used for transferring data to the target process. The return value either denotes the result of an operation or contains data retrieve from the process.
+
+Note that \texttt{ptrace} only affects the process it is first attached to. The proof of concept discussed in this work only traces one process. If there are \texttt{a.out} programs to be executed that spawn multiple child processes, this may cause problems, if these processes try to load additional libraries.
+
+The requests used in this work are the following:
+
+\begin{itemize}
+    \item \texttt{PTRACE\_TRACEME}: This request lets us indicate that the current process should be traced. As previously described, the initialization pattern used in this work is the following: use \texttt{fork} to create a new process space, prepare tracing via the \texttt{PTRACE\_TRACEME} request, then launch the actual tracee using \texttt{execve}.
+    \item \texttt{PTRACE\_SETOPTIONS}: This request allows the tracer to configure the trace. See \ref{solution_tracer} for more information on which options are used.
+    \item \texttt{PTRACE\_SINGLESTEP} lets the tracer execute single instructions in the tracee step by step and regain control afterwards.
+    \item \texttt{PTRACE\_CONT} lets the tracee continue and also allows to send signals to the tracee.
+    \item \texttt{PTRACE\_SYSCALL}: A combination of this request and \texttt{waitpid} is used to intercept system calls. After the request is made the tracee is stopped in the syscall enter phase and the tracer can examine registers before the system call. If the instruction pointer (in the \texttt{EIP} register) is modified by the tracer at this point, the system call can be cancelled and other code can be executed instead. The tracee may be resumed by using \texttt{PTRACE\_CONT} or \texttt{PTRACE\_SINGLESTEP}. If the tracer wishes to continue normally, this can be done by using \texttt{PTRACE\_SYSCALL}, which simply continues execution until the system call exit phase. After that the tracer may examine the result of the system call.
+    \item \texttt{PTRACE\_GETREGS} is used to read the contents of all registers at the current point of execution. For this a pointer to a \texttt{struct user\_regs\_struct} (see listing \ref{lst:userregs}) is passed as data pointer.
+    \item \texttt{PTRACE\_SETREGS} is used to write the contents of all registers at once. Again a pointer to a \texttt{struct user\_regs\_struct} is passed, which contains the register values that should be applied.
+    \item \texttt{PTRACE\_PEEKDATA}\footnote{There are also \texttt{PTRACE\_PEEKTEXT} and \texttt{PTRACE\_POKETEXT} requests, respectively, however the documentation states that both kinds of requests can operate on all memory pages. Currently, there is no distinction between \texttt{.text} and \texttt{.data}.} is used to read a 64-bit value from the tracee's memory. The read value is returned.
+    \item \texttt{PTRACE\_POKEDATA} is used to write a 64-bit value to the tracee's memory.
+\end{itemize}
+
+\begin{lstlisting}[caption={Definition of the 32-bit version of the \texttt{struct user\_regs\_struct} for reference}, label={lst:userregs}]
+struct user_regs_struct
+{
+  long int ebx;            // EBX register
+  long int ecx;            // ECX register
+  long int edx;            // EDX register
+  long int esi;            // ESI register
+  long int edi;            // EDI register
+  long int ebp;            // EBP register
+  long int eax;            // EAX register: on system call enter, this holds the
+                           //               system call number; on system call
+                           //               exit, the holds the return value.
+  long int xds;            // data segment register
+  long int xes;            // extra segment register
+  long int xfs;            // extra segment register 2
+  long int xgs;            // extra segment register 3
+  long int orig_eax;       // orig. EAX register: on system call exit,
+                           //                     holds the orig. system call number.
+  long int eip;            // EIP register
+  long int xcs;            // code segment register
+  long int eflags;         // flags register
+  long int esp;            // ESP register
+  long int xss;            // stack segment register
+};
+\end{lstlisting}
+
+\subsection{The Loader}
+\label{loader}
+
+Before an executable is executed, usually a new process is created. Linux uses three different system calls to create processes: \texttt{clone}, \texttt{fork} and \texttt{vfork}. The \texttt{fork} system creates a full copy of the current process: the address space, page table, file descriptors and signal dispositions are copied (see \cite{ForkManPage} for further details). The current process, becomes the new process's parent process. \texttt{vfork} behaves similar to \texttt{fork}, with the one exception that it does not copy the process's address space and page table. The \texttt{clone} system call is similar to \texttt{fork}, but allows fine-grained control over what parts of the process are duplicated.
+
+Using the system call \texttt{execve} the execution of an executable is started. The address space and page table of the current process are emptied and the new executable is loaded. The kernel prepares the execution of a program by first filling the \texttt{linux\_binprm} structure with the parameters used to execute the program, which includes the (executable) filename, the name of the interpreter (for binaries this equals the executable filename), the number of arguments and environment variables, credentials, a reference to the memory manager (used to map sections into memory), etc. This structure is then passed on to the \texttt{search\_binary\_handler} function, which loops through all loaded \texttt{binfmt\_*} kernel modules and asks them to load the binary. If none of the modules can successfully load the executable, the kernel returns \texttt{ENOEXEC}.
+
+\subsubsection{Overview of binary format handlers}
+
+Each implementation of a binary format handler (\texttt{binfmt} kernel module) can provide implementations to three different functions:
+
+\begin{itemize}
+    \item \texttt{load\_binary}: this function is used to load an executable binary, the \texttt{linux\_binprm} structure is passed to this function. If the binary format handler cannot handle the given binary format, it simply returns \texttt{ENOEXEC}.
+    \item \texttt{load\_shlib}: this function is invoked by the system call handler for the \texttt{uselib} system call.
+    \item \texttt{core\_dump}: used to create memory dumps of processes. This function will not be discussed in detail in this work.
+\end{itemize}
+
+Note that both \texttt{load\_shlib} and \texttt{core\_dump} are not strictly required to be implemented by a binary format handler. An example would be the \texttt{binfmt\_misc}, which can be used to implement executable format handlers by configuration: Users can add simple checks for magic values and provide a command that should be executed if the given magic value is found. Using this technique the proof of concept presented in this work can be configured to be called, if the user tries to execute an \texttt{a.out} binary.
+
+In the case of \texttt{a.out} the inner workings of \texttt{binfmt\_aout} can be summarised as follows:
+
+\begin{enumerate}
+    \item Read the executable file header and determine the format.
+    \item Allocate enough pages for the text, data and bss sections.
+    \item Read the contents of the text and data sections.
+    \item Zero the bss segment.
+    \item Allocate and set up the stack.
+    \item Put the arguments (argc + argv) and environment variables (envc + envp) on the stack.
+    \item Set registers and start a new thread at the executable's entry-point (which usually equals the start of the text section).
+\end{enumerate}
+
+For \texttt{a.out} libraries, which are loaded using the \texttt{uselib} system call, only steps 2 to 4 are necessary.
+
+\subsection{\texttt{a.out} Format Description}
+\label{formatdesc}
+
+The \texttt{a.out} format in its simplest form consists of three parts: A 32 byte long header is followed by the executable instruction bytes (called the "text segment") and the initial static data bytes (called the "data segment").
+
+After these three (mandatory) parts the binary may include (in that order) text relocation info, data relocation info and symbol and string tables used to store symbol/debug information. However, in this work we only focus on the mandatory sections supported on Linux and do not deal with BSD extensions.
+
+\subsubsection{The \texttt{a.out} Header}
+\label{formatdesc_header}
+
+The structure of the \texttt{a.out} header is given with byte offsets in table \ref{tab:aout_header}\cite[lines 5-15]{ExecStructDef}:
+
+\vspace{0.15cm}
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lp{1cm}p{1cm}p{1cm}p{1cm}p{1cm}p{1cm}p{1cm}p{1cm}}
+     bytes & 0 & 1 & 2 & 3 & 4 & 5 & 6 & 7 \\ \cline{2-9} 
+    \multicolumn{1}{l|}{0} &
+      \multicolumn{2}{c|}{magic} &
+      \multicolumn{1}{c|}{\makecell{machine \\ type}} &
+      \multicolumn{1}{c|}{flags} &
+      \multicolumn{4}{c|}{\makecell{.text segment \\ length}} \\ \cline{2-9} 
+    \multicolumn{1}{l|}{8} &
+      \multicolumn{4}{c|}{\makecell{.data segment \\ length}} &
+      \multicolumn{4}{c|}{\makecell{.bss segment \\ length}} \\ \cline{2-9} 
+    \multicolumn{1}{l|}{16} &
+      \multicolumn{4}{c|}{\makecell{symbol table \\ size}} &
+      \multicolumn{4}{c|}{\makecell{entry-point \\ address}} \\ \cline{2-9} 
+    \multicolumn{1}{l|}{24} &
+      \multicolumn{4}{c|}{\makecell{text relocation \\ table size}} &
+      \multicolumn{4}{c|}{\makecell{data relocation \\ table size}} \\ \cline{2-9} 
+    \end{tabular}
+    \caption{\texttt{a.out} header fields including their byte offsets from the start of the file.}
+    \label{tab:aout_header}
+\end{table}
+
+\vspace{0.25cm}
+
+\begin{itemize}
+\item \textbf{magic:} The "magic" byte sequence at the start of the executable file denotes the type of executable. For example, ELF binaries use the sequence ``0x7fELF"\cite{ElfManPage}. In the case of \texttt{a.out} different two-byte sequences are used\cite[lines 63-74]{AoutHDef}:
+  \begin{itemize}
+    \item OMAGIC (\texttt{0407}) %octal
+    \item NMAGIC (\texttt{0410})
+    \item ZMAGIC (\texttt{0413})
+    \item QMAGIC (\texttt{0314})
+    \item CMAGIC (\texttt{0421})
+  \end{itemize}
+Later, we will take a closer look at the meaning of these values. Note that we will not cover CMAGIC binaries, as these are only used for memory dumps and not executables.
+
+One interesting historical detail is that the magic number used for OMAGIC binaries \texttt{0407} matches the instruction encoding for a \texttt{br 7} instruction as understood by the PDP-11\cite[page 4-37]{PDP1140Handbook}. The Opcode is encoded in the first byte, the offset in the second byte. This is a primitive form of position-independent code, as a simple loader could load the program at address \texttt{0x0} and the first instruction would skip the header and jump right to the first instruction of the .text segment\cite[page 51, footnote 1]{Levine}.
+
+\item \textbf{machine type:} Describes the format used for encoding the executable instruction bytes in the text segment. The following values are known to have been used. (see \cite{AoutHDef})
+  \begin{itemize}
+   \item M\_OLDSUN2 (\texttt{0x0})
+   \item M\_68010 (\texttt{0x1})
+   \item M\_68020 (\texttt{0x2})
+   \item M\_SPARC (\texttt{0x3})
+   \item M\_386 (\texttt{0x64})
+   \item M\_MIPS1 (\texttt{0x97})
+   \item M\_MIPS2 (\texttt{0x98})
+  \end{itemize}
+In this work we will focus on the x86 processor family (M\_386).
+
+\item \textbf{flags:} This field appears not to be used by the \texttt{a.out} format implementation provided by Linus Torvalds -- it is expected to be zero \cite[line 285]{BinfmtAoutC} --
+however the BSD implementation supports two flags: \texttt{EX\_DYNAMIC} and \texttt{EX\_PIC}\cite{FreeBSDAoutManPage}.
+
+\item \textbf{.text segment length:} Contains the length of the .text segment (given in bytes). This section's content starts directly after the 32 byte header.
+
+\item \textbf{.data segment length:} Contains the length of the .data segment (given in bytes). This section's content starts directly after the .text segment content.
+
+\item \textbf{.bss segment length:} Contains the length of the .bss segment (given in bytes). The acronym ``bss" stands for ``block started by symbol". The .bss is not present in the executable file itself. It is a zero-initialized extension of the .data section.
+
+\item \textbf{symbol table size:} Contains the size of the symbol table in bytes. \texttt{a.out} uses the STABS format.
+
+\item \textbf{entry-point address:} Contains the absolute entry-point address. Because Linux does not support relocations, this field is either \texttt{0} or contains a page-aligned address offset by 32 bytes. For a.out libraries this is the address at which the library should be loaded. For \texttt{QMAGIC} executables this is usually \texttt{0x1020}.
+
+\item \textbf{text relocation table size:} Contains the size of the .text segment relocation table in bytes. Linux does not support relocations, therefore this field should be zero.
+
+\item \textbf{data relocation table size:} Contains the size of the .data segment relocation table in bytes. Linux does not support relocations, therefore this field should be zero.
+\end{itemize}
+
+\subsubsection{The \texttt{OMAGIC} and \texttt{NMAGIC} format}
+\label{formatdesc_onmagic}
+
+\texttt{OMAGIC} is the simplest variant of \texttt{a.out} binaries. Binaries of this type are also called object files or ``impure" executables; this hints at the fact that the sections are not aligned at page borders. The contents of the text and data sections are mapped into one contiguous segment at address 0.
+
+The structure of \texttt{NMAGIC} binaries is similar to the \texttt{OMAGIC} format. At runtime the text section is also mapped at address 0, however, the data and bss sections are mapped at the start of the next page after the text section.
+
+A big disadvantage of this is that the contents of the sections must be copied into memory. Directly using memory-mapped IO is not possible.
+
+\subsubsection{The \texttt{ZMAGIC} and \texttt{QMAGIC} format}
+\label{formatdesc_zqmagic}
+
+In order to make it possible to use memory-mapped IO the \texttt{ZMAGIC} format aligns all sections in the executable/object file at page boundaries.\cite[page 53]{Levine} That is, on a system with pages of 4KB all sections are expanded so that the size of each section is a multiple of 4KB. The size of the header is extended to 1024 bytes. (Levine mentions that the header is extended to 4KB as well, however, all \texttt{ZMAGIC} binaries that were analyzed while developing the prototype did not use a padding of 4KB in the header.) 
+
+Of course, this wastes a lot of disk space: 992 bytes for the header and on average a 2KB gap between the text and data section. This led to the \texttt{QMAGIC} format, also called ``compact pageable format"\cite[page 53]{Levine}, which solves these issues by simply mapping the file header into the process. The entry-point is adjusted to include a 32 byte offset, skipping the header.
+
+This has another advantage: Dereferencing null pointers no longer touches executable memory.
+
+\subsection{Analyzing the initialization sequence of an \texttt{a.out} binary}
+
+The first step was to analyze the successful execution of the \texttt{a.out} binary. Once we understood how it should behave, we could start emulating this behavior on a 64-bit system. It was possible to get to work a few select \texttt{a.out QMAGIC} binaries on a Ubuntu 16.04 LTS 32-bit with the legacy \texttt{binfmt\_aout} kernel module. The memory mappings of these binaries/processes were then used as a baseline for the custom loader.
+
+Looking at the output of \texttt{strace} in listing \ref{lst:strace_output}, we can see that first \texttt{ld.so} is loaded, then used to load other required libraries and then unloaded again. This behavior seems consistent across all the different kinds of \texttt{a.out} executables, some of which were disassembled in order to analyze them further.
+
+\begin{lstlisting}[caption={(Shortened) output of \texttt{strace} showing the system calls that are executed}, label={lst:strace_output}]
+# strace ./usr/local/bin/gforth-0.3.0 -i slack/usr/local/lib/gforth/0.3.0/gforth.fi
+execve("./usr/local/bin/gforth-0.3.0", ["./usr/local/bin/gforth-0.3.0", "-i", "slack/usr/local/lib/gforth/0.3.0"...], [/* 31 vars */]) = 0
+uselib("/lib/ld.so")                    = -1 ENOENT (No such file or directory)
+uselib("/usr/i486-linux/lib/ld.so")     = 0
+stat("/etc/ld.so.cache", {st_mode=S_IFREG|0644, st_size=91963, ...}) = 0
+open("/etc/ld.so.cache", O_RDONLY)      = 3
+mmap(NULL, 91963, PROT_READ, MAP_SHARED, 3, 0) = 0xb7fe9000
+close(3)                                = 0
+write(2, "/lib/ld.so: cache '/etc/ld.so.ca"..., 55/lib/ld.so: cache '/etc/ld.so.cache' has wrong version
+) = 55
+munmap(0xb7fe9000, 91963)               = 0
+open("/etc/ld.so.conf", O_RDONLY)       = 3
+fstat(3, {st_mode=S_IFREG|0644, st_size=72, ...}) = 0
+read(3, "include /etc/ld.so.conf.d/*.conf"..., 72) = 72
+close(3)                                = 0
+uselib("include/libm.so.4")             = -1 ENOENT (No such file or directory)
+uselib("/etc/ld.so.conf.d/*.conf/libm.so.4") = -1 ENOENT (No such file or directory)
+uselib("include/libm.so.4")             = -1 ENOENT (No such file or directory)
+uselib("/home/siegfried/usr/local/lib/libm.so.4") = 0
+uselib("include/libc.so.4")             = -1 ENOENT (No such file or directory)
+uselib("/etc/ld.so.conf.d/*.conf/libc.so.4") = -1 ENOENT (No such file or directory)
+uselib("include/libc.so.4")             = -1 ENOENT (No such file or directory)
+uselib("/home/siegfried/usr/local/lib/libc.so.4") = 0
+munmap(0x62f00000, 20480)               = 0
+...
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Output of \texttt{pmap} showing the memory mappings of an \texttt{a.out} binary, that loads additional libraries at runtime}, label={lst:pmap_example}]
+# pmap 11898
+11898:   ./usr/local/bin/gforth-0.3.0 -i slack/usr/local/lib/gforth/0.3.0/gforth.fi
+00001000     28K r-x-- gforth-0.3.0
+00008000      4K rwx-- gforth-0.3.0
+00009000     96K rw---   [ anon ]
+5ffff000    620K rwx-- libc.so.4.7.2
+6009a000    188K rw---   [ anon ]
+600df000    108K rwx-- libm.so.4.6.27
+b7fbf000    260K rwx--   [ anon ]
+b8001000     16K rwx--   [ anon ]
+b8006000     16K rwx--   [ anon ]
+b800b000     16K rwx--   [ anon ]
+b8010000     16K rwx--   [ anon ]
+bffde000    132K rw---   [ stack ]
+ total     1500K
+\end{lstlisting}
+
+In listing \ref{lst:pmap_example} we can see that \texttt{QMAGIC} binaries are loaded at address \texttt{0x1000} and all referenced libraries have hard-coded base addresses. The addresses used match the values in the \texttt{a\_entry} fields in the respective \texttt{a.out} headers. We can also see that \texttt{ld.so} is unloaded after all other libraries are loaded.
+
+As development was primarily done on a 64-bit system, the first step was to install support for running 32-bit executables and also adding the corresponding support for GCC. Then a small \texttt{a.out} binary that simply prints the message ``Hello World!" was compiled using Netwide Assembler (NASM) as it is one of the few tools that still are able to produce \texttt{a.out} binaries natively.
+
+In the first prototype the produced executable was loaded at address \texttt{0x10000} because it is the lowest possible address (see \ref{explore_low_mmap} for a more detailed explanation). This was done as a proof of concept, to test whether manually loading executable code is possible.
+
+\section{Exploring different ideas: small steps towards a solution}
+\label{explore}
+
+This chapter discusses the different problems, ideas and approaches that were tried before arriving at the final solution discussed in the next chapter.
+
+\subsection{The Problem: Emulating the support for \texttt{a.out} on modern systems in usermode}
+\label{the_problem}
+
+In \ref{loader} we briefly discussed how a program is loaded by the kernel. The steps described there seem quite simple: Allocate process memory, load the sections of the executable into pages of memory and then kick off execution, by jumping to the entry-point of the executable. However, as it turns out, it is not quite that simple: The Linux kernel has gone through a lot of changes since the \texttt{a.out} format was replaced by \texttt{ELF} in 1995. A lot of new features and security measures were introduced, some of which make it harder if not impossible to run these binaries on modern systems:
+
+\begin{enumerate}
+    \item The introduction of 64-bit and the subsequent removal of default support for 32-bit binaries on modern systems: Although this is easy to solve, it is something you have to think about, before being able to use 32-bit executables on Linux.
+    \item The implementation of Address Space Layout Randomization (ASLR) and restrictions regarding which parts of process memory may be used for executable purposes makes it impossible to load executable code at addresses smaller than \texttt{0x10000} (see \ref{explore_low_mmap} and \ref{explore_aslr}).
+    \item The removal of the \texttt{binfmt\_aout} kernel module necessitates the implementation of a custom handler for \texttt{uselib} system calls. This adds a lot of complexity.
+\end{enumerate}
+
+\subsection{Building an environment for successful execution of \texttt{a.out} binaries}
+\label{explore_environment}
+
+The first problem we had to solve was finding a general architecture where \texttt{a.out} binaries could be loaded and executed successfully. Also, any incompatible or missing parts should be provided by this architecture.
+
+\subsubsection{Hosting a 32-bit executable in the lower address space of a 64-bit process}
+\label{explore_32_64_SxS}
+
+This idea was one of the first ideas that were explored: In the \texttt{x86\_64} variant of the Linux kernel, all addresses with the most-significant bit (MSB) set to 0 are treated as user-space addresses; all addresses with the MSB set to 1 are treated as kernel-space addresses. So the idea was to use some address larger than \texttt{0xFFFF\_FFFF} (but smaller than \texttt{0x8000\_0000\_0000\_0000}) as the location of the loader code, that maps all relevant sections of the executable.
+
+Of course this is only possible, if \texttt{x86} assembly and \texttt{AMD64} assembly are binary-compatible or it is possible to switch the CPU from 64-bit mode to 32-bit mode when jumping back and forth between the loader/trampoline code and the \texttt{a.out} executable code. However, \texttt{x86} assembly and \texttt{AMD64} assembly are not binary-compatible: Some \texttt{x86} opcodes were replaced by the so-called ``REX prefixes" used in 64-bit mode to specify GPRs and SSE registers, 64-bit operand size and extended control registers\cite[2.2.1]{IntelManualVol2A}.  At least ``[t]he single-byte-opcode form of [the] INC/DEC [is] not available in 64-bit mode." \cite[2.2.1.2, par. 2]{IntelManualVol2A}.
+
+As experiments by others have shown\cite{SOMix32And64BitInstructions}, it is possible to mix 32-bit and 64-bit instructions in a 64-bit process in usermode, however the possibilities are very limited. Another problem is the incompatibility of \texttt{ld.so}/\texttt{uselib} system call handling in current kernels, as they no longer understand the \texttt{a.out} format, which made it necessary to intercept those system calls (see \ref{explore_binpatch}). For these reasons we decided to use a two-process model, where the \texttt{a.out} binary lives in a process separate from the loader.
+
+\subsubsection{Implementing a 32-bit loader using the C programming language}
+\label{explore_loader_using_C}
+
+The idea was to implement all the binary parsing and loading logic using C and then using \texttt{fork} to create a copy of the whole process. After forking the \texttt{ptrace} API could be used to monitor the created process and handle any unsupported system calls.
+
+However, as shown in listing \ref{lst:pmap_run-aout1}, large parts of the address space would already be used by the host, which might prevent the \texttt{a.out} binary from properly executing. In the final solution a handcrafted and carefully placed \texttt{trampoline} executable is used to avoid these problems.
+
+\begin{lstlisting}[caption={Output of \texttt{pmap} showing the memory mappings of an early prototype of \texttt{run-aout}}, label={lst:pmap_run-aout1}]
+# pmap 14524
+14524:   ./run-aout ../exp/hello/test.o
+0000000000010000      4K rwx-- test.o
+00000000565b5000     12K r-x-- run-aout
+00000000565b8000      4K r-x-- run-aout
+00000000565b9000      4K rwx-- run-aout
+00000000569ae000    136K rwx--   [ anon ]
+00000000f7db4000   1864K r-x-- libc-2.27.so
+00000000f7f86000      4K ----- libc-2.27.so
+00000000f7f87000      8K r-x-- libc-2.27.so
+00000000f7f89000      4K rwx-- libc-2.27.so
+00000000f7f8a000     12K rwx--   [ anon ]
+00000000f7fa8000      8K rwx--   [ anon ]
+00000000f7faa000     12K r----   [ anon ]
+00000000f7fad000      4K r-x--   [ anon ]
+00000000f7fae000    152K r-x-- ld-2.27.so
+00000000f7fd4000      4K r-x-- ld-2.27.so
+00000000f7fd5000      4K rwx-- ld-2.27.so
+00000000ffbb3000    132K rwx--   [ stack ]
+ total             2368K
+\end{lstlisting}
+
+\subsection{Mapping memory at low addresses}
+\label{explore_low_mmap}
+
+Modern operating systems implement additional security measures protecting against memory access bugs and exploits. One such counter-measure is marking the first few pages of process memory as read-only. This, however, poses a problem for the execution of \texttt{a.out} binaries, as they expect the entry-point to be located at address 0 (or \texttt{0x1020} for \texttt{QMAGIC} binaries).
+
+The solution to this problem was to override the kernel parameter \texttt{vm.mmap\_min\_addr}. The documentation on the kernel parameter \texttt{vm.mmap\_min\_addr}\cite{KernelParam1} states that ``[t]his file indicates the amount of address space which a user process will be restricted from mmapping. [...] By default this value is set to 0 and no protections will be enforced by the security module. Setting this value to something like 64k will allow the vast majority of applications to work correctly and provide defense in depth against future potential kernel bugs."
+
+As a convenience feature run-aout will detect whether the \texttt{vm.mmap\_min\_addr} parameter is set correctly and warn the user about misconfiguration.
+
+\subsection{Address Space Layout Randomization}
+\label{explore_aslr}
+
+Another security measure protecting against process memory exploits is Address Space Layout Randomization (ASLR). It makes sure that future memory allocations can no longer be predicted or known from past executions of a program. However, some \texttt{a.out} programs may depend on absolute memory addresses, which is no longer possible with ASLR enabled.
+
+This problem can be solved by the use of Linux utilities like \texttt{setarch} or the \texttt{personality} API and setting the \texttt{ADDR\_NO\_RANDOMIZE} flag.
+
+\subsection{Binary patching}
+\label{explore_binpatch}
+
+Binary patching is the process of modifying binaries to alter their behavior\cite{citation needed}. The goal of this idea was to rewrite all occurrences of the \texttt{uselib} system call to instead jump to a fixed address in the same process to emulate it.
+
+The assembly for the \texttt{uselib} system call used by \texttt{ld.so} can be seen in listing \ref{lst:asm_uselib} and a possible patched version in listing \ref{lst:asm_custom_uselib}. Thanks to the wide variety of instructions in \texttt{x86} and the use of a \texttt{mov r32, imm32} instruction in the original code, it is easily possible to inject a call to an emulation procedure.
+
+\begin{lstlisting}[caption={Assembly for the invocation of the \texttt{uselib} system call as used by \texttt{ld.so}}, label={lst:asm_uselib}]
+00:	b8 56 00 00 00       	mov    eax,0x56
+05:	8b 5c 24 08          	mov    ebx,DWORD PTR [esp+0x8]
+09:	cd 80                	int    0x80
+\end{lstlisting}
+
+\begin{lstlisting}[caption={A possible patch replacing the system call with a call to our custom handler located at (for example) \texttt{0xc000\_0000}}, label={lst:asm_custom_uselib}]
+00:	b8 00 00 00 c0       	mov    eax,0xc0000000
+05:	8b 5c 24 08          	mov    ebx,DWORD PTR [esp+0x8]
+09:	ff d0                	call   eax
+\end{lstlisting}
+
+However, \texttt{ld.so} is not the only binary that needs this adjustment, in reality there are indefinitely many possible libraries that need this adjustment. Therefore it quickly became apparent that this approach can only serve as a stop-gap measure until a dynamic solution (using \texttt{ptrace}) is implemented.
+
+\section{run-aout: A solution}
+\label{solution}
+
+Putting all the pieces which were explored in the previous chapters together, a working example of a loader for \texttt{a.out} residing in userspace can be built. In the following chapter the architecture and implementation of \texttt{run-aout} will be discussed in detail.
+
+\subsection{Overview}
+\label{solution_overview}
+
+In general \texttt{run-aout} consists of two parts: the \texttt{run-aout} executable written in C and the \texttt{trampoline} executable written in assembly. The \texttt{run-aout} process (tracer/controller) loads the \texttt{a.out} binary file and checks whether all preconditions for successful execution are met. It then forks a child process (tracee/ trampoline) that is monitored using the \texttt{ptrace} API. The \texttt{trampoline} executable is loaded via \texttt{execve} and serves as host process for the \texttt{a.out} code and execution. Note that for simplicity, both the tracer and the trampoline are executed in 32-bit processes.
+
+As previously discussed, \texttt{a.out} uses \texttt{ld.so} and the \texttt{uselib} system call to load libraries. As the Linux kernel no longer understands how to load \texttt{a.out} libraries, these system calls must be intercepted by the tracer and loading of \texttt{a.out} libraries must be emulated outside of the kernel.
+
+\begin{figure}
+    \centering
+    \includegraphics[scale=0.5]{bakk1.png}
+    \caption{An overview of the processes involved in the emulation of \texttt{a.out}.}
+    \label{fig:architecture_overview}
+\end{figure}
+
+\subsection{The tracer/controller}
+\label{solution_tracer}
+
+The \texttt{run-aout} controller opens the given \texttt{a.out} binary and prepares it for execution. This preparation consists of the following steps:
+
+First, it is ensured that either the process is executed as root or the kernel parameter \texttt{vm.mmap\_min\_addr} is set to a value smaller or equal to the page-aligned entry-point of the executable. That is \texttt{0x1000} for \texttt{QMAGIC} and \texttt{0x0} in all other cases. In case of \texttt{QMAGIC} the binary can be directly mapped into memory, however, in all other cases a temporary image file is written. In it the individual sections are aligned to match the expectations of the executable format as described in \ref{formatdesc_onmagic} and \ref{formatdesc_zqmagic}.
+
+The next step is to use \texttt{fork} to create a child process. The child process then uses the \texttt{ptrace} API \texttt{PTRACE\_TRACEME} to allow the controller to trace it. Once tracing is started the child process uses \texttt{execvp} API to launch the \texttt{trampoline}. The controller detaches itself from \texttt{stdin} and sets the following options:
+
+\begin{itemize}
+    \item \texttt{PTRACE\_O\_TRACESYSGOOD}: This is used to identify \texttt{SIG\_TRAP}s caused by system calls.
+    \item \texttt{PTRACE\_O\_EXITKILL}: This forces the child process to be killed as soon as the controller dies. This is necessary so that the child process may not escape the controller.
+\end{itemize}
+
+The controller waits for the \texttt{execve} system call to complete and then single-steps through the \texttt{\_start} procedure. Once the \texttt{call \_syscall\_mmap\_exec} instruction is reached execution is paused and the address, length and file descriptor are set to the \texttt{ebx}, \texttt{ecx} and \texttt{edx} registers respectively. Then the child process is told to continue stepping.
+
+After the process returns from the call, that is before the \texttt{call \_syscall\_mmap\_bss} instruction, it is stopped again and if the \texttt{a.out} binary contains a \texttt{.bss} section greater zero, its address and length are written to the \texttt{ebx} and \texttt{ecx} registers, otherwise we increase the \texttt{eip} register by 5 bytes and skip the instruction.
+
+At this point the \texttt{a.out} binary should be mapped properly and its execution can be started. This is done by setting the absolute entry-point address to \texttt{eax} and executing a \texttt{jmp eax} instruction. Now the initialization of the \texttt{a.out} binary execution is complete.
+
+Now the controller waits for any \texttt{uselib} system calls and intercepts them. As described in section \ref{system calls}, there are two callbacks, for when a system call is entered and exited respectively. Once a \texttt{uselib} system call is detected, it is intercepted and the given library filename is loaded by the controller and checked for compatibility.
+
+\texttt{run-aout} has a convenience feature, which makes it search a file named \texttt{uselib.conf} for library mappings. It may contain zero or more entries of the form: \texttt{library\_file.so:/path/to/library/file}. This makes it possible to configure \texttt{a.out} libraries independently from the system's library search path.
+
+\subsection{The tracee/trampoline}
+
+The trampoline is a small set of wrapper functions around the system calls necessary to load \texttt{a.out} binaries:
+
+\begin{itemize}
+    \item \texttt{\_start}: This is the entry-point of the trampoline. Its main task is to open the \texttt{a.out} binary, map the relevant sections, prepare the stack and registers and then jump to the \texttt{a.out} entry-point.
+    \item \texttt{\_syscall\_open}: A thin wrapper around the \texttt{open} system call. It expects the filename to be present in the \texttt{ebx} register. On success returns a file descriptor of the opened file.
+    \item \texttt{\_syscall\_mmap}: A thin wrapper around the \texttt{mmap} system call.
+    \item \texttt{\_syscall\_mmap\_exec}: A thin wrapper around \texttt{\_syscall\_mmap} that maps the contents of the fd (given in \texttt{edx}) at an address and of some length (given in \texttt{ebx} and \texttt{ecx} respectively). This is used to map both \texttt{.text} and \texttt{.data} into one contiguous memory region.
+    \item \texttt{\_syscall\_mmap\_bss}: A thin wrapper around \texttt{\_syscall\_mmap} that creates an anonymous and ``zeroed" mapping at an address and of length (given in \texttt{ebx} and \texttt{ecx} respectively).
+    \item \texttt{\_syscall\_mmap\_lib}: A thin wrapper around \texttt{\_syscall\_mmap} that emulates the \texttt{uselib} system call.
+\end{itemize}
+
+The inner workings of \texttt{\_start} and \texttt{\_syscall\_mmap\_lib} will be explained in detail in the following sections.
+
+\subsubsection{\texttt{\_start}}
+
+\texttt{\_start} is the entry-point of the \texttt{trampoline} binary. The controller launches the trampoline and hands over all command line arguments intended for the \texttt{a.out} binary. However, these binaries expect to find a ``pointer table" on the stack\cite[lines 54-59]{BinfmtAoutC}, as shown in table \ref{tab:expected_stack}.
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{|l|l|}\hline
+    offset & content       \\ \hline\hline
+    esp+0  & argc          \\ \hline
+    esp+4  & \&\&argv{[}0{]} \\ \hline
+    esp+8  & \&\&envp{[}0{]} \\ \hline
+    $\cdots$ & $\cdots$ \\ \hline
+    \end{tabular}
+    \caption{Arrangement of the stack as expected by \texttt{a.out}.}
+    \label{tab:expected_stack}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{|l|l|}
+    \hline
+    offset & content       \\ \hline\hline
+    esp+0  & argc          \\ \hline
+    esp+4  & \&argv{[}0{]} \\ \hline
+    esp+8  & \&argv{[}1{]} \\ \hline
+    $\cdots$ & $\cdots$ \\ \hline
+    esp+4*argc  & \&argv{[}argc - 1{]} \\ \hline
+    esp+4*(argc + 1)  & NULL delimiter for argv \\ \hline
+    esp+4*(argc + 2)  & \&envp{[}0{]} \\ \hline
+    $\cdots$ & $\cdots$ \\ \hline
+    \end{tabular}
+    \caption{Contents of the stack after the execution of the trampoline has started.}
+    \label{tab:given_stack}
+\end{table}
+
+However, the stack/memory state produced by \texttt{execvp} provides the values of \texttt{argc}, \texttt{argv} and \texttt{envp} as a flat list, as shown in table \ref{tab:given_stack}. In order to achieve the result presented in table \ref{tab:expected_stack}, we use the assembly code in listing \ref{lst:ptrtbl}.
+
+\begin{lstlisting}[language={[x86masm]Assembler}, caption={Assembly used to prepare the pointer table required by \texttt{a.out} executables}, label={lst:ptrtbl}]
+    sub esp, 12             ;; Make room for three 32-bit integers/pointers
+    mov eax, [esp+12]       ;; argc is now stored at [esp+12], ...
+    mov [esp], eax          ;; ... copy it to [esp]
+    mov eax, esp            ;; Calculate the address of argv,
+    add eax, 16             ;; i.e., esp+16
+    mov [esp+4], eax        ;; and copy it to [esp+4], the second slot
+    mov eax, [esp]          ;; Calculate the address of envp,
+    add eax, 5              ;; i.e., (argc + 5) * 4 + esp, the offset 5 is necessary, as
+    shl eax, 2              ;; there are the 3 pointers + argc + the NULL terminator 
+    add eax, esp            ;; of argv we need to skip.
+    mov [esp+8], eax        ;; and copy it to [esp+8], the last slot
+\end{lstlisting}
+
+In line 1 space for 3 32-bit values (12 bytes) is allocated. Lines 2 and 3 simply copy the value of \texttt{argc} to \texttt{[esp+0]}. Lines 4 to 6 calculate the address of \texttt{argv[0]} and write it to \texttt{[esp+4]}. Lines 7 to 11 calculate the address of \texttt{envp[0]}.
+
+As previously described, after this the next step is to map the \texttt{.text} and \texttt{.data}/\texttt{.bss} sections, and then jump to the entry-point of the \texttt{a.out} executable and start its execution.
+
+\subsubsection{\texttt{\_syscall\_mmap\_lib}}
+
+The \texttt{uselib} system call has one argument (in \texttt{ebx}\cite{SyscallRef}): a pointer to the name of the library that should be loaded. After this system call is intercepted by the controller, and the file has been loaded and checked for compatibility, the controller invokes \texttt{\_syscall\_mmap\_lib}, which is located at address \texttt{0xc000\_0000}. The code in listing \ref{lst:uselib_emu} shows the core of its implementation.
+
+%language={[ansi]C}
+\begin{lstlisting}[language={[x86masm]Assembler}, caption={Assembly used to emulate the behavior of a \texttt{uselib} system call.}, label={lst:uselib_emu}]
+    mov ebx, <full_library_filename>            ;; open the file given in ebx
+    call _syscall_open
+    cmp eax, 0                                  ;; if the system call returns a number
+    jl _syscall_mmap_lib_exit_enoent            ;; smaller than 0, an error occurred.
+
+    mov edx, eax                                ;; execute the mmap system call to
+    mov ebx, <base_address>                     ;; map the .text and .data sections.
+    mov ecx, <text_and_data_length>
+    call _syscall_mmap_exec
+    cmp eax, -4095                              ;; if -4095 is returned, the system
+    jae _syscall_mmap_lib_exit                  ;; call failed.
+
+    mov ebx, <bss_address>
+    mov ecx, <bss_length>
+    cmp ecx, 0
+    je _syscall_mmap_lib_exit_success           ;; check if the length of bss is > 0
+
+    call _syscall_mmap_bss                      ;; allocate .bss
+    cmp eax, -4095
+    jae _syscall_mmap_lib_exit                  ;; if an error occurred, exit.
+    jmp _syscall_mmap_lib_exit_success          ;; otherwise, return 0
+_syscall_mmap_lib_exit_enoent:
+    mov eax, -2
+    jmp _syscall_mmap_lib_exit
+_syscall_mmap_lib_exit_success:
+    mov eax, 0
+\end{lstlisting}
+
+One thing to note is that before this code is executed all values that match the \texttt{<name>} pattern are replaced by actual values as required to load the given library.
+
+The meaning of these magic values is as follows:
+\begin{itemize}
+    \item \texttt{full\_library\_filename}: the address of the filename of the library that should be loaded.
+    \item \texttt{base\_address}: the base address of the library.
+    \item \texttt{text\_and\_data\_length}: the combined size of \texttt{.text} and \texttt{.data} segments.
+    \item \texttt{bss\_address}: the address of the \texttt{.bss} segment, i.e., the library base address + the size of \texttt{.text} and \texttt{.data}.
+    \item \texttt{bss\_length}: the size of the \texttt{.bss} segment.
+\end{itemize}
+
+To sum it up, the code above first opens the library and then performs a mmap of \texttt{.text}, \texttt{.data} and (if necessary) \texttt{.bss} segments.
+
+After successful execution, the controller receives the return value in \texttt{eax} and before normal execution is continued it resets \texttt{eip} back to the initial value and modifies the \texttt{eax} register (system call result) according to the result of the emulation. Note that if the emulation is successful the ``system call exit" is never performed -- execution continues normally instead.
+
+\section{Related Work}
+
+This section will cover topics and works related to the topics emulation, binary translation and executable formats. It aims to provide a comparison and further information.
+
+
+
+\todo{Mögliche Arbeiten: \\
+1) An X86 emulator written using Java -- \url{ftp://ftp.cs.man.ac.uk/pub/apt/theses/JohnBurcham\_MSc.pdf}\\
+2) }
+
+\section{Conclusion and Future Work}
+
+The \texttt{run-aout} 
+
+Although this work provides a proof that loading and executing \texttt{a.out} binaries in user mode Linux, there are some issues, which still need to be addressed in the future:
+
+\begin{itemize}
+    \item We observed problems with certain system calls, which lead to crashes and segmentation faults during execution. For example, programs that use the \texttt{brk} system call to allocate memory by changing the size of the data segment, might run into problems due to how the process created by \texttt{run-aout} works.\\
+    The code used by the trampoline is located at \texttt{0xc000\_0000} and \texttt{brk} will return an address after the end of the trampoline's \texttt{.text} segment. However, \texttt{a.out} programs might expect it to return an address after the \texttt{a.out} program's \texttt{.data} section, which is no longer possible.\\
+    Solving this problem will require \texttt{run-aout} to emulate the original behavior of the \texttt{brk} system call.
+    
+    \item If Linux ever decides to completely remove native support for 32-bit processes and binaries, just as it happened to the built-in \texttt{a.out} support, additional work may be required to make \texttt{run-aout} work with existing emulation software such as QEMU.
+    
+    \item Another problem is that the current implementation of \texttt{run-aout} makes debugging the \texttt{a.out} program very difficult. A process can only be traced by exactly one process. However, GDB offers the ``GDB remote protocol" \cite{GDBRemoteProtocol} which could be used to exchange commands and data between GDB and the \texttt{a.out} process.
+\end{itemize}
+
+\newpage
+\printbibliography
+
+\newpage
+\listoffigures
+
+\listoftables
+
+\lstlistoflistings
+
+\end{document}
