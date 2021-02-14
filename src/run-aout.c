@@ -85,11 +85,11 @@ static int perform_uselib(pid_t pid)
 
     // search uselib.conf for a library mapping.
     char *short_file = strlast(file, "/");
-    char *mapping = get(short_file);
+    char *mapping = get_entry(short_file);
     fprintf(logfile, "'%s' mapped as '%s'\n", short_file, mapping);
     if (mapping != NULL) {
         file = mapping;
-        filename = set_data(pid, filename, file, strlen(file) + 1);
+        filename = set_data(pid, file, strlen(file) + 1);
         print_data(pid, filename, 1024);
     }
 

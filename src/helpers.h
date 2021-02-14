@@ -33,7 +33,7 @@ long get_aligned_segment_size(long segment_size);
 char *strlast(char *s, const char *delimiter);
 bool validate_header(struct exec *header);
 void get_data(pid_t pid, long address, char *buffer, int length);
-long set_data(pid_t pid, long address, char *buffer, int length);
+long set_data(pid_t pid, char *buffer, int length);
 void print_data(pid_t pid, long address, int length);
 int waitpid_printf(pid_t pid);
 

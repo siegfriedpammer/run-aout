@@ -1,3 +1,10 @@
+/**
+ * @file uselib.c
+ * @author Siegfried Pammer <e1633095@student.tuwien.ac.at>
+ * @date 11.02.2020
+ *
+ * @brief provides a simple dictionary implementation to manage uselib.conf.
+ */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -7,7 +14,7 @@
 
 struct entry_t buckets[BUCKETS];
 
-unsigned long djb2(char *str)
+static unsigned long djb2(char *str)
 {
     unsigned long hash = 5381;
     int c;
@@ -16,7 +23,11 @@ unsigned long djb2(char *str)
     return hash % BUCKETS;
 }
 
-void add(char *key, char *value)
+/* add_entry
+ * @brief emulates the uselib syscall.
+ * @param pid PID of the a.out host process.
+ **/
+void add_entry(char *key, char *value)
 {
     unsigned long bucket = djb2(key);
     entryp entry = &buckets[bucket];
@@ -29,7 +40,11 @@ void add(char *key, char *value)
     memset(entry->next, 0, sizeof(struct entry_t));
 }
 
-char *get(char *key)
+/* get_entry
+ * @brief emulates the uselib syscall.
+ * @param pid PID of the a.out host process.
+ **/
+char *get_entry(char *key)
 {
     unsigned long bucket = djb2(key);
     entryp entry = &buckets[bucket];
@@ -41,6 +56,9 @@ char *get(char *key)
     return NULL;
 }
 
+/* read_uselibconf
+ * @brief reads the contents of uselib.conf and initializes the uselib dictionary.
+ **/
 int read_uselibconf()
 {
     FILE *uselib = fopen("uselib.conf", "r");
@@ -57,7 +75,7 @@ int read_uselibconf()
         char *value = strtok_r(NULL, ":\r\n", &save);
         if (key == NULL || value == NULL)
             break;
-        add(key, value);
+        add_entry(key, value);
     }
 
     return EXIT_SUCCESS;

@@ -48,6 +48,12 @@ bool wait_for_syscall(pid_t pid, int syscall)
     return false;
 }
 
+/* get_aligned_segment_size
+ * @brief returns the segment size aligned to full pages.
+ * @param segment_size the original segment size.
+ * 
+ * Returns a value >= segment_size such that value % page_size == 0.
+ **/
 long get_aligned_segment_size(long segment_size)
 {
     int page_size = getpagesize();
@@ -58,6 +64,11 @@ long get_aligned_segment_size(long segment_size)
     return npages * page_size;
 }
 
+/* strlast
+ * @brief returns the part of s after last occurrence of delimiter or null if not found.
+ * @param s the string to operate on
+ * @param delimiter the delimiter to look for.
+ **/
 char *strlast(char *s, const char *delimiter)
 {
     char *save, *curr, *prev;
@@ -71,6 +82,14 @@ char *strlast(char *s, const char *delimiter)
     return prev;
 }
 
+/* validate_header
+ * @brief returns true if the given a.out header is supported by run-aout.
+ * @param header pointer to the a.out header
+ * 
+ * * N_MAGIC must return any of OMAGIC, NMAGIC, ZMAGIC or QMAGIC.
+ * * Machine type must be M_386
+ * * Flags must be 0.
+ **/
 bool validate_header(struct exec *header)
 {
 	unsigned int magic = N_MAGIC(*header);
@@ -96,6 +115,13 @@ bool validate_header(struct exec *header)
 	return true;
 }
 
+/* get_data
+ * @brief reads data from process memory.
+ * @param pid the PID of the process to access.
+ * @param address the address to read from.
+ * @param buffer non-NULL buffer to write to.
+ * @param length the number of quadlets (32-bit) to read.
+ **/
 void get_data(pid_t pid, long address, char *buffer, int length)
 {
     union long_char data;
@@ -108,7 +134,15 @@ void get_data(pid_t pid, long address, char *buffer, int length)
     buffer[length] = '\0';
 }
 
-long set_data(pid_t pid, long address, char *buffer, int length)
+/* set_data
+ * @brief writes data to process memory.
+ * @param pid the PID of the process to access.
+ * @param buffer non-NULL buffer to read from.
+ * @param length the number of quadlets (32-bit) to write.
+ * 
+ * Returns the address of the written data.
+ **/
+long set_data(pid_t pid, char *buffer, int length)
 {
     union long_char data;
 
@@ -127,6 +161,12 @@ long set_data(pid_t pid, long address, char *buffer, int length)
     return (long)stack;
 }
 
+/* print_data
+ * @brief reads data from process memory and prints it to the logfile.
+ * @param pid the PID of the process to access.
+ * @param address the address to read from.
+ * @param length the number of quadlets (32-bit) to read.
+ **/
 void print_data(pid_t pid, long address, int length)
 {
     char buffer[1024];
@@ -134,6 +174,12 @@ void print_data(pid_t pid, long address, int length)
     fprintf(logfile, "data at 0x%08lx: \"%s\"\n", address, buffer);
 }
 
+/* waitpid_printf
+ * @brief waits for pid to be signalled and then prints status information.
+ * @param pid the PID to wait for.
+ * 
+ * Returns the status.
+ **/
 int waitpid_printf(pid_t pid)
 {
     int status;
