@@ -375,7 +375,11 @@ static int parse_args(int argc, char **argv)
     }
 
     if (logfile == NULL) {
-        logfile = fopen("/dev/null", "w");
+        if (print_header) {
+            logfile = stdout;
+        } else {
+            logfile = fopen("/dev/null", "w");
+        }
     }
 
     return EXIT_SUCCESS;
@@ -396,7 +400,6 @@ int main(int argc, char **argv)
 
     logfile = NULL;
     print_header = false;
-
     // parse arguments
     if (parse_args(argc, argv) == EXIT_FAILURE) {
         return EXIT_FAILURE;
