@@ -23,11 +23,18 @@ union long_char {
  **/
 bool wait_for_syscall(pid_t pid, int syscall)
 {
-    int status;
+    int status = 0;
     struct user_regs_struct regs;
   
     while (true) {
-        ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
+        fprintf(logfile, "PTRACE_SYSCALL with signal %d\n", WSTOPSIG(status));
+        // HACK: forward SIGALRM to child to make ping work...
+        // TODO: are there any other places and/or signals that need adjustment?
+        if (WSTOPSIG(status) == SIGALRM) {
+            ptrace(PTRACE_SYSCALL, pid, NULL, (void *)WSTOPSIG(status));
+        } else {
+            ptrace(PTRACE_SYSCALL, pid, NULL, NULL);
+        }
         status = waitpid_printf(pid);
         int isStop = WSTOPSIG(status) & 0x80;
         if (WIFSTOPPED(status) && isStop) {
@@ -39,6 +46,11 @@ bool wait_for_syscall(pid_t pid, int syscall)
                 return true;
             }
             if (regs.orig_eax == SYS_exit) {
+                // code for debugging: print pmap at exit
+                //char buf[100];
+                //sprintf(buf, "pmap %d", pid);
+                //printf(buf);
+                //system(buf);
                 getchar();
             }
         }
@@ -191,6 +203,8 @@ int waitpid_printf(pid_t pid)
             print_pc(pid);
             print_regs(pid);
             exit(1);
+        } else {
+
         }
     }
     if (WIFEXITED(status)) {
