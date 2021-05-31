@@ -8,7 +8,7 @@
 all: trampoline run-aout
 
 run-aout: run-aout.c uselib.c helpers.c debug.c run-aout.h uselib.h helpers.h debug.h a.out.h
-	gcc -m32 -ggdb run-aout.c uselib.c helpers.c debug.c -o run-aout
+	gcc -std=gnu99 -m32 -ggdb run-aout.c uselib.c helpers.c debug.c -o run-aout
 
 trampoline: trampoline.asm
 	nasm -f elf trampoline.asm -o trampoline.o
