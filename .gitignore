@@ -1,5 +1,7 @@
 .vscode/
 src/*.o
+thesis/output.*/
+thesis/main.pdf
 trampoline
 run-aout
 *.log
