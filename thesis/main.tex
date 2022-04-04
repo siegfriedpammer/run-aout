@@ -64,7 +64,7 @@
 
 % Required data.
 \setregnumber{01633095}
-\setdate{12}{02}{2020} % Set date with 3 arguments: {day}{month}{year}.
+\setdate{\day}{\month}{\year} % Set date with 3 arguments: {day}{month}{year}.
 \settitle{\thesistitle}{Titel der Arbeit} % Sets English and German version of the title (both can be English or German). If your title contains commas, enclose it with additional curvy brackets (i.e., {{your title}}) or define it as a macro as done with \thesistitle.
 %\setsubtitle{Optional Subtitle of the Thesis}{Optionaler Untertitel der Arbeit} % Sets English and German version of the subtitle (both can be English or German).
 
@@ -136,7 +136,7 @@ I want to also thank Daniel Grunwald for his helpful comments, and the ic\#code 
 \end{acknowledgements*}
 
 \begin{kurzfassung}
-Die Einstellung des Supports und die Löschung des \texttt{binfmt\_aout} Kernelmoduls aus dem Linux Kernel in der Version 5 macht es unmöglich, Programme auszuführen, die das \texttt{a.out} Format verwenden. Diese Arbeit versucht die Frage zu beantworten, ob und wie es möglich ist, \texttt{a.out} Binärdateien auf modernen Systemen auszuführen. Ein Hauptziel war, dass die Lösung im ,,user space`` ausgeführt wird, ohne besonderen Support durch den Kernel. In dieser Arbeit, befassen wir uns zunächst mit den Problemen, die auftreten, wenn man versucht \texttt{a.out} Binärdateien zu laden, weil sich Plattform für die \texttt{a.out} ursprünglich entwickelt wurde, in manchen Aspekten sehr von modernen Plattformen unterscheidet. Dann führen wir mögliche Lösungen für diese Probleme an und präsentieren auch einen funktionalen Prototyp, der die Ausführung von \texttt{a.out} Programmen auf aktuellen Linux Kerneln/Distributionen ermöglicht.
+Die Einstellung des Supports und die Löschung des \texttt{binfmt\_aout} Kernelmoduls aus dem Linux Kernel in der Version 5 machen es unmöglich, Programme auszuführen, die das \texttt{a.out} Format verwenden. Diese Arbeit versucht die Frage zu beantworten, ob und wie es möglich ist, \texttt{a.out} Binärdateien auf modernen Systemen auszuführen. Ein Hauptziel war, dass die Lösung im ,,user space`` ausgeführt wird, ohne besonderen Support durch den Kernel. In dieser Arbeit, befassen wir uns zunächst mit den Problemen, die auftreten, wenn man versucht \texttt{a.out} Binärdateien zu laden, weil sich Plattform für die \texttt{a.out} ursprünglich entwickelt wurde, in manchen Aspekten sehr von modernen Plattformen unterscheidet. Dann führen wir mögliche Lösungen für diese Probleme an und präsentieren auch einen funktionalen Prototyp, der die Ausführung von \texttt{a.out} Programmen auf aktuellen Linux Kerneln/Distributionen ermöglicht.
 \end{kurzfassung}
 
 \begin{abstract}
@@ -155,14 +155,14 @@ The depreciation and removal of the \texttt{binfmt\_aout} kernel module, in vers
 \chapter{Introduction}
 \label{intro}
 
-In March of 2019 Linus Torvalds published a change \cite{PhoronixNews} \cite{LinuxKernelGitMsg} to the Linux kernel, in which support for the \texttt{a.out} format was deprecated and subsequently removed (this went into effect as of kernel version \texttt{5.0}). However, as there are still people interested in being able to run \texttt{a.out} binaries on current versions of Linux, this work aims to find a solution that does not require special kernel support.
+In March of 2019 Linus Torvalds published a change \cite{PhoronixNews} \cite{LinuxKernelGitMsg} to the Linux kernel, in which support for the \texttt{a.out} format was deprecated and subsequently removed (this went into effect as of kernel version \texttt{5.0}). The reason for this (as described in \cite{LinuxMailingList}) is that \texttt{a.out} ``coredumping has bitrotten quite significantly and would need some fixing to get it into shape again''. However, as there are still people interested in being able to run \texttt{a.out} binaries on current versions of Linux, this work aims to find a solution that does not require special kernel support. Another reason for this work is that, although we were able to run select \texttt{a.out} QMAGIC binaries on recent 32-bit Linux systems (Ubuntu 16.04 LTS 32-bit) using the \texttt{binfmt\_aout} kernel module, it turned out to be very brittle and somewhat difficult to configure. Also it was only possible to get to work QMAGIC binaries, but not all other variants of \texttt{a.out}.
 
 This work will briefly discuss how operating systems generally load binaries using the example of \texttt{a.out} on Linux. Further it will explore the characteristics and uses of the variants of the \texttt{a.out} format, as well as the downsides, which led to \texttt{a.out} gradually being replaced by ELF around 1995 and finally deprecated and removed in 2019. Furthermore, this work will explore the options and work that would have to be done to allow Linux \texttt{a.out} binaries to run on current kernels and systems and finally present a possible implementation of such a loader.
 
 \chapter{The Environment}
 \label{environment}
 
-In the following chapter the prerequisites of this work will be laid out. First, a short summary of the history of \texttt{a.out} binaries will be given, followed by an explanation of the x86 architecture, system calls and the \texttt{ptrace} API.
+In the following chapter the prerequisites of this work will be laid out. First, a short summary of the history of \texttt{a.out} binaries will be given, followed by an explanation of the \texttt{ptrace} API. For those interested, a short summary of the x86 architecture and Linux system calls may be found in the appendix (see \ref{x86arch} and \ref{system calls}).
 
 \section{A brief history of the \texttt{a.out} format}
 \label{history}
@@ -488,9 +488,9 @@ As a convenience feature run-aout will detect whether the \texttt{vm.mmap\_min\_
 \section{Address Space Layout Randomization}
 \label{explore_aslr}
 
-Another security measure protecting against process memory exploits is Address Space Layout Randomization (ASLR). It makes sure that future memory allocations can no longer be predicted or known from past executions of a program. However, some \texttt{a.out} programs may depend on absolute memory addresses, which is no longer possible with ASLR enabled.
+Another security measure protecting against process memory exploits is Address Space Layout Randomization (ASLR). It makes sure that future memory allocations can no longer be predicted or known from past executions of a program. However, some \texttt{a.out} programs may depend on absolute memory addresses, which is no longer possible with ASLR enabled, and would cause segmentation faults during execution. This problem can be solved by the use of Linux utilities like \texttt{setarch} or the \texttt{personality} API and setting the \texttt{ADDR\_NO\_RANDOMIZE} flag.
 
-This problem can be solved by the use of Linux utilities like \texttt{setarch} or the \texttt{personality} API and setting the \texttt{ADDR\_NO\_RANDOMIZE} flag.
+In later stages of development, we were not able to consistently reproduce the segmentation faults, due to the random factor. Also, turning off ASLR did not solve the problem consistently. Thus, we recommend executing \texttt{a.out} binaries using \texttt{root} privileges, as this would circumvent most security measures causing problems.
 
 \section{Binary patching}
 \label{explore_binpatch}
@@ -532,12 +532,30 @@ As previously discussed, \texttt{a.out} uses \texttt{ld.so} and the \texttt{usel
     \label{fig:architecture_overview}
 \end{figure}
 
+Before going into the implementation details, we will look at how the different components of \texttt{run-aout} solve the problems described in chapter \ref{explore}:
+
+\begin{enumerate}
+    \item The two-process model solves the problems described in \ref{explore_32_64_SxS} and \ref{explore_loader_using_C} by separating the code that fulfills the role of the loader from the actual execution environment. Only a small portion of assembly code is used to mimic the actions the kernel would perform in-process.
+    
+    \item The controller solves the memory mapping issues described in \ref{explore_low_mmap} by ensuring that it is either executed using \texttt{root} privileges, or that memory-mapping executable code at addresses below \texttt{0x10000} is possible, as described in \ref{explore_low_mmap}.
+    
+    \item It also enables the use of the \texttt{ptrace} API to handle \texttt{uselib} and other system calls, instead of having to patch the \texttt{uselib} system calls manually or semi-automatically, as described in \ref{explore_binpatch}.
+\end{enumerate}
+
 \section{The tracer/controller}
 \label{solution_tracer}
 
 The \texttt{run-aout} controller opens the given \texttt{a.out} binary and prepares it for execution. This preparation consists of the following steps:
 
-First, it is ensured that either the process is executed as root or the kernel parameter \texttt{vm.mmap\_min\_addr} is set to a value smaller or equal to the page-aligned entry-point of the executable. That is \texttt{0x1000} for \texttt{QMAGIC} and \texttt{0x0} in all other cases. In case of \texttt{QMAGIC} the binary can be directly mapped into memory, however, in all other cases a temporary image file is written. In it the individual sections are aligned to match the expectations of the executable format as described in \ref{formatdesc_onmagic} and \ref{formatdesc_zqmagic}.
+First, it is ensured that either the process is executed as root or the kernel parameter \texttt{vm.mmap\_min\_addr} is set to a value smaller or equal to the page-aligned entry-point of the executable. That is \texttt{0x1000} for \texttt{QMAGIC} and \texttt{0x0} in all other cases. In case of \texttt{QMAGIC} the binary can be directly mapped into memory, however, in all other cases a temporary image file is written on-the-fly. In this temporary file, the individual sections are aligned to match the expectations of the executable format as described in \ref{formatdesc_onmagic} and \ref{formatdesc_zqmagic}:
+
+\begin{itemize}
+    \item For \texttt{ZMAGIC} the first 1024 bytes are skipped and the start of the \texttt{.text} section is moved to offset 0. The \texttt{.data} section immediately follows the \texttt{.text} section, including a page-alignment padding.
+    
+    \item For \texttt{OMAGIC} the first 32 bytes (i.e., the executable header) are skipped and the \texttt{.text} section is moved to offset 0. The \texttt{.data} section immediately follows, without any padding.
+    
+    \item For \texttt{NMAGIC} the first 32 bytes (i.e., the executable header) are skipped and the \texttt{.text} section is moved to offset 0. The \texttt{.data} section is placed at the next address after that, which is a multiple of 1024 bytes.
+\end{itemize}
 
 The next step is to use \texttt{fork} to create a child process. The child process then uses the \texttt{ptrace} API \texttt{PTRACE\_TRACEME} to allow the controller to trace it. Once tracing is started the child process uses \texttt{execvp} API to launch the \texttt{trampoline}. The controller detaches itself from \texttt{stdin} and sets the following options:
 
@@ -681,22 +699,92 @@ The meaning of these magic values is as follows:
 
 To sum it up, the code above first opens the library and then performs a mmap of \texttt{.text}, \texttt{.data} and (if necessary) \texttt{.bss} segments.
 
-After successful execution, the controller receives the return value in \texttt{EAX} and before normal execution is continued it resets \texttt{eip} back to the initial value and modifies the \texttt{EAX} register (system call result) according to the result of the emulation. Note that if the emulation is successful the ``system call exit'' is never performed -- execution continues normally instead.
+After successful execution, the controller receives the return value in \texttt{EAX} and before normal execution is continued it resets \texttt{eip} back to the return address of the system call and modifies the \texttt{EAX} register (system call result) according to the result of the emulation. Note that if the emulation is successful the ``system call exit'' is never performed -- execution continues normally instead.
 
 \chapter{Evaluation}
 
+In this section we will present the results of the execution of several \texttt{a.out} executables. The executables used are taken from a Slackware Distribution (dated circa 1994) and were extracted from two gzipped tarballs: \texttt{slack.tar.xz} and \texttt{usr.tar.xz}. Table \ref{tab:tested_executables} shows the names of executables, their location inside the package, the type, file size and whether the execution of the executable using \texttt{run-aout} was successful.
 
+\begin{table}[H]
+    \centering
+    \begin{tabular}{|l|l|l|l|l|l|}\hline
+    name & package & path & type & size & success   \\ \hline\hline
+    pwd  & slack.tar.xz & bin/pwd & OMAGIC & 1368 & yes \\ \hline
+    echo  & slack.tar.xz & bin/echo & OMAGIC & 3312 & yes \\ \hline
+    ls  & slack.tar.xz & bin/ls & ZMAGIC & 25604 & yes \\ \hline
+    mkdir  & slack.tar.xz & bin/mkdir & ZMAGIC & 13316 & yes \\ \hline
+    ping  & slack.tar.xz & bin/ping & OMAGIC & 10860 & yes \\ \hline
+    gforth-0.2.1  & usr.tar.xz & local/bin/gforth-0.2.1 & QMAGIC & 32768 & no \\ \hline
+    gforth-0.3.0  & usr.tar.xz & local/bin/gforth-0.3.0 & QMAGIC & 32768 & yes \\ \hline
+    Mosaic  & usr.tar.xz & local/bin/Mosaic & ZMAGIC & 1551772 & no \\ \hline
+    dot  & usr.tar.xz & local/bin/dot & ZMAGIC & 264675 & no \\ \hline
+    \end{tabular}
+    \caption{Overview of all tested and analyzed executables}
+    \label{tab:tested_executables}
+\end{table}
+
+The libraries used for testing were mapped as follows:
+
+\begin{lstlisting}[caption={Contents of uselib.conf}]
+ld.so:/home/siegfried/bachelorarbeit/lib/ld.so
+libc.so.4:/home/siegfried/bachelorarbeit/lib/libc.so.4.7.2
+libm.so.4:/home/siegfried/bachelorarbeit/lib/libm.so.4.6.27
+\end{lstlisting}
+
+\section{Analyzing the failed executions}
+
+\texttt{run-aout} was developed with extensive logging support, which allows deep analysis of the failures during execution of an \texttt{a.out} executable. The types of errors fall into two categories:
+
+\begin{enumerate}
+    \item Problems with system calls, that need special support: the \texttt{brk} system call is sometimes used to allocate memory by changing the size of the data segment. This causes problems because the program break is located after the end of the trampoline (at \texttt{0xc000\_1000}) and \texttt{brk} will return an address after that.
+    
+    \item The use of libraries using formats other than QMAGIC is simply not yet implemented in \texttt{run-aout}. The Mosaic executable is such an example. It uses \texttt{libXt.so.6.0}, which is a library stored in the ZMAGIC format. However, loading would require the \texttt{run-aout} \texttt{uselib} handler to convert the ZMAGIC library on the fly (just like it is done with ZMAGIC executables) but then store them on disk, so the uselib handler of the trampoline is able to load the binary. For simplicity we only implemented QMAGIC libraries.
+\end{enumerate}
+
+\subsection{\texttt{gforth-0.2.1}}
+
+\begin{lstlisting}[caption={Output produced by \texttt{gforth 0.2.1}}]
+./run-aout -- ../gforth/gforth-0.2.1 -i ../gforth/gforth-0.2.1.fi
+/lib/ld.so: cache '/etc/ld.so.cache' has wrong version
+../gforth/gforth-0.2.1: Cannot load nonrelocatable image (compiled for address $11030) at address $c0960030
+The Gforth installer should look into the INSTALL file
+\end{lstlisting}
+
+The execution of \texttt{gforth-0.2.1} fails because it tries to allocate space for the \texttt{gforth-0.2.1.fi} image using \texttt{brk}, which returns an address above \texttt{0xc000\_0000}. This can be seen in the output of \texttt{pmap} just before the \texttt{gforth-0.2.1} program terminates:
+
+\begin{lstlisting}[caption={Pmap for \texttt{gforth 0.2.1}}]
+18488:   ../gforth/gforth-0.2.1 -i ../gforth/gforth-0.2.1.fi
+0000000000001000     32K rwx-- gforth-0.2.1
+000000005ffff000    620K rwx-- libc.so.4.7.2
+000000006009a000    188K rwx--   [ anon ]
+00000000600df000    108K rwx-- libm.so.4.6.27
+00000000c0000000      4K r-x-- trampoline
+00000000c0f9b000    368K rwx--   [ anon ]
+00000000f7f3d000     12K r----   [ anon ]
+00000000f7f40000      4K r-x--   [ anon ]
+00000000ff7e0000    132K rwx--   [ stack ]
+ total             1468K
+\end{lstlisting}
+
+The segment starting at \texttt{0xc0f9\_b000} is the segment that \texttt{gforth-0.2.1} tries to load the image at. This fails, however, as the image is not relocatable and the expected address is \texttt{0x0001\_1030}.
+
+\subsection{Mosaic}
+
+Mosaic is the most complex program we tried to execute. The output of the first execution is as follows:
+
+\begin{lstlisting}[caption={Output of the first execution of Mosaic}]
+# ./run-aout -- ../../ertl/usr/local/bin/Mosaic 
+/lib/ld.so: cache '/etc/ld.so.cache' has wrong version
+../../ertl/usr/local/bin/Mosaic: can't find library 'libXt.so.6'
+\end{lstlisting}
+
+After adding \texttt{libXt.so.6} to \texttt{uselib.conf} mapped to \texttt{/home/siegfried/ertl/ usr/local/lib/libXt.so.6.0}. The program continues to execute, but \texttt{libXt.so.6.0} is a library in the ZMAGIC format, which is not yet implemented and thus its execution fails. Adding support for ZMAGIC binaries seems feasible, but might involve a bit more work.
 
 \chapter{Related Work}
 
 \section{Emulation}
 
-Emulation is used to provide a suitable environment for the execution of legacy software and hardware systems by imitating the behavior of legacy systems. \cite{dorukdesign} A. Doruk et al. give an overview of the different approaches to emulation. They mention the distinction between a ``System Virtual Machine'' (examples include VirtualBox, VMWare, HyperV) and a ``Process Virtual Machine'' (examples would be QEMU, Wine). The \texttt{run-aout} prototype would be best classified as a ``Process Virtual Machine'', because it ``is developed for
-handling only one process. It is used for
-running the process that is compatible with
-different environment on current system. It is
-created, when the process starts and killed,
-when the process finishes.'' \cite[2]{dorukdesign}
+Emulation is used to provide a suitable environment for the execution of legacy software and hardware systems by imitating the behavior of legacy systems. \cite{dorukdesign} A. Doruk et al. give an overview of the different approaches to emulation. They mention the distinction between a ``System Virtual Machine'' (examples include VirtualBox, VMWare, HyperV) and a ``Process Virtual Machine'' (examples would be QEMU, Wine). The \texttt{run-aout} prototype would be best classified as a ``Process Virtual Machine'', because it ``is developed for handling only one process. It is used for running the process that is compatible with different environment on current system. It is created, when the process starts and killed, when the process finishes.'' \cite[2]{dorukdesign}
 
 In his work ``An X86 emulator written in Java'' \cite{JBurcham} J. Burcham focuses on the emulation of a complete x86 environment, including process creation, binary loading and instruction decoding and translation. Most of these topics were not relevant, as we tried to provide a simple and fast mechanism to execute programs stored in a deprecated format. The format served as a container for a compatible x86 instruction and data stream. We were able to leverage the (still) existing support for the x86 architecture built into Linux and only had to fill the gaps to allow the execution of instructions. A similarity both approaches share is the need to understand the structure of the binary format.
 
